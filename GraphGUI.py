@@ -13,7 +13,6 @@ from PIL import Image, ImageTk  # pip install pillow
 # Desactivar warnings SSL
 requests.packages.urllib3.disable_warnings()
 
-# Temas disponibles en ttkbootstrap
 VALID_THEMES = ["cosmo","flatly","journal","litera","lumen","minty",
                 "pulse","sandstone","superhero","vapor","darkly","cyborg"]
 
@@ -25,7 +24,7 @@ class GraphPyGUI:
         self.root.tk.call("tk", "scaling", 1.75)
 
         # --- Tema ttkbootstrap ---
-        self.style_name = "cosmo"
+        self.style_name = "vapor"
         self.style = tb.Style(self.style_name)
 
         console_font = tkfont.Font(family="Consolas", size=10)
@@ -162,18 +161,21 @@ class GraphPyGUI:
         hostname = f"https://{host_port}"
         auth = (user, password)
 
+        # Carpeta raíz procesada
         folders_list = [("/" + f.strip()) if not f.strip().startswith("/") else f.strip() for f in folders_input.split(";") if f.strip()]
 
+        # --- CSV: manejo correcto de rutas absolutas ---
         default_prefix = "Inventario_apis_"
-        filename = default_prefix + (csv_name if csv_name else datetime.now().strftime('%Y%m%d_%H%M%S')) + ".csv"
-        output_csv = os.path.join(os.getcwd(), filename)
+        if csv_name:
+            output_csv = csv_name if os.path.isabs(csv_name) else os.path.join(os.getcwd(), default_prefix + csv_name + ".csv")
+        else:
+            output_csv = os.path.join(os.getcwd(), default_prefix + datetime.now().strftime('%Y%m%d_%H%M%S') + ".csv")
 
         self.log("=== Inicio Inventario APIs ===")
         start_time = time.time()
         all_services = []
         empty_folders = []
 
-        # --- Mensaje si hay muchas carpetas ---
         if len(folders_list) > 50:
             self.log("⚠️ Atención: Gran volumen de carpetas detectado, esto puede tardar un poco. No cierre la aplicación.")
 
