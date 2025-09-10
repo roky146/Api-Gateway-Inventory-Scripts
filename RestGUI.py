@@ -22,10 +22,12 @@ try:
     from ttkbootstrap import ttk
     THEME = "superhero"
     USE_TTB = True
+    AVAILABLE_THEMES = ["superhero", "darkly", "cyborg", "vapor", "solar", "minty", "litera", "journal", "flatly", "cosmo", "cerculean", "united", "sandstone", "pulse", "morph", "lumen"]
 except Exception:
     from tkinter import ttk
     THEME = None
     USE_TTB = False
+    AVAILABLE_THEMES = []
 
 # Desactivar warnings SSL
 requests.packages.urllib3.disable_warnings()
@@ -63,6 +65,61 @@ def fetch_with_retry(url, session, auth, retries=5, backoff_factor=1, timeout=No
     if log_callback:
         log_callback(f"[{timestamp()}] Exhausted retries para: {url}\n")
     return None
+
+def get_service_resolution_path(service_id, session, auth, log_callback=None):
+    """Obtiene el resolutionPath de un servicio específico"""
+    url = f"{hostname}/restman/1.0/services/{service_id}"
+    resp = fetch_with_retry(url, session, auth, log_callback=log_callback, timeout=30, retries=3, backoff_factor=1)
+    
+    if resp is None:
+        if log_callback:
+            log_callback(f"[{timestamp()}] No se pudo obtener detalles del servicio {service_id}\n")
+        return "N/A"
+    
+    try:
+        # Parsear el XML para obtener el resolutionPath
+        root = ET.fromstring(resp.text)
+        ns = {"l7": "http://ns.l7tech.com/2010/04/gateway-management"}
+        
+        # Buscar el elemento Service y luego ServiceDetail
+        service_detail = root.find(".//l7:ServiceDetail", ns)
+        if service_detail is not None:
+            service_mappings = service_detail.find(".//l7:ServiceMappings", ns)
+            if service_mappings is not None:
+                http_mapping = service_mappings.find(".//l7:HttpMapping", ns)
+                if http_mapping is not None:
+                    url_pattern = http_mapping.find("l7:UrlPattern", ns)
+                    if url_pattern is not None and url_pattern.text:
+                        return url_pattern.text
+        
+        # Si no encontramos el patrón de URL, intentar otra estructura
+        resources = root.findall(".//l7:Resource", ns)
+        for resource in resources:
+            if resource.get("type") == "service":
+                # Buscar dentro del contenido del recurso
+                content = resource.text or ""
+                if "urlPattern" in content:
+                    # Extraer el urlPattern del XML interno
+                    try:
+                        inner_root = ET.fromstring(content)
+                        url_pattern = inner_root.find(".//urlPattern")
+                        if url_pattern is not None and url_pattern.text:
+                            return url_pattern.text
+                    except:
+                        pass
+        
+        if log_callback:
+            log_callback(f"[{timestamp()}] No se encontró resolutionPath para servicio {service_id}\n")
+        return "N/A"
+        
+    except ET.ParseError as e:
+        if log_callback:
+            log_callback(f"[{timestamp()}] Error parsing XML para servicio {service_id}: {e}\n")
+        return "N/A"
+    except Exception as e:
+        if log_callback:
+            log_callback(f"[{timestamp()}] Error inesperado obteniendo resolutionPath para {service_id}: {e}\n")
+        return "N/A"
 
 def parse_services(xml_content):
     ns = {"l7": "http://ns.l7tech.com/2010/04/gateway-management"}
@@ -102,7 +159,7 @@ def traverse_folder(folder_id, path, session, auth, visited_folders, api_map, em
         if saved > 0:
             log_callback(f"[{timestamp()}] Guardados {saved} servicios en {path}\n")
         elif not services and not subfolders:
-            log_callback(f"[{timestamp()}] Carpeta vacía: {path}\n")
+            log_callback(f"[{timestamp()}] Carpeta vací­a: {path}\n")
             empty_folders.append(path)
 
     for idx, sf in enumerate(subfolders, start=1):
@@ -137,10 +194,10 @@ def run_inventory(host, user, password, folders_input, output_file, log_callback
 
     start_time = time.time()
     if log_callback:
-        log_callback(f"[{timestamp()}] Obteniendo lista de carpetas raíz...\n")
+        log_callback(f"[{timestamp()}] Obteniendo lista de carpetas raí­z...\n")
     all_folders = get_all_folders(session, auth, log_callback=log_callback)
     if log_callback:
-        log_callback(f"[{timestamp()}] Se encontraron {len(all_folders)} carpetas raíz.\n")
+        log_callback(f"[{timestamp()}] Se encontraron {len(all_folders)} carpetas raí­z.\n")
 
     # --- NUEVO: mensaje si tarda mucho en pasar al siguiente paso ---
     time_after_folders = time.time()
@@ -152,27 +209,53 @@ def run_inventory(host, user, password, folders_input, output_file, log_callback
     api_map = {}
     empty_folders = []
 
+    # Buscar carpeta raí­z que coincida con cada target_path
+    for tp in target_paths:
+        matched_root = None
+        for fname, fid in all_folders:
+            if tp.startswith(fname):
+                matched_root = (fname, fid)
+                break
+        if matched_root:
+            traverse_folder(matched_root[1], matched_root[0], session, auth, visited_folders, api_map, empty_folders, log_callback)
+        else:
+            if log_callback:
+                log_callback(f"[{timestamp()}] No se encontró carpeta raí­z correspondiente para: {tp}\n")
+
+    # Obtener resolution paths
+    if log_callback:
+        log_callback(f"[{timestamp()}] Obteniendo resolution paths para {len(api_map)} servicios...\n")
+    
+    total_services = len(api_map)
+    processed = 0
+    
+    for api_id, info in api_map.items():
+        if CANCEL_EVENT.is_set():
+            if log_callback:
+                log_callback(f"[{timestamp()}] Proceso cancelado durante obtención de resolution paths\n")
+            break
+            
+        processed += 1
+        if log_callback and processed % 10 == 0:  # Log cada 10 servicios
+            log_callback(f"[{timestamp()}] Progreso resolution paths: {processed}/{total_services}\n")
+        
+        resolution_path = get_service_resolution_path(api_id, session, auth, log_callback)
+        info["resolutionPath"] = resolution_path
+
     try:
         with open(output_file, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["folderPath", "serviceName", "serviceId"])
+            # NUEVA columna: resolutionPath
+            writer = csv.DictWriter(f, fieldnames=["folderPath", "serviceName", "serviceId", "resolutionPath"])
             writer.writeheader()
-
-            # Buscar carpeta raíz que coincida con cada target_path
-            for tp in target_paths:
-                matched_root = None
-                for fname, fid in all_folders:
-                    if tp.startswith(fname):
-                        matched_root = (fname, fid)
-                        break
-                if matched_root:
-                    traverse_folder(matched_root[1], matched_root[0], session, auth, visited_folders, api_map, empty_folders, log_callback)
-                else:
-                    if log_callback:
-                        log_callback(f"[{timestamp()}] No se encontró carpeta raíz correspondiente para: {tp}\n")
 
             # Guardar APIs finales en CSV
             for api_id, info in api_map.items():
-                writer.writerow({"folderPath": info["folderPath"], "serviceName": info["serviceName"], "serviceId": api_id})
+                writer.writerow({
+                    "folderPath": info["folderPath"], 
+                    "serviceName": info["serviceName"], 
+                    "serviceId": api_id,
+                    "resolutionPath": info.get("resolutionPath", "N/A")
+                })
     except PermissionError:
         if log_callback:
             log_callback(f"[{timestamp()}] Error: permiso denegado al escribir {output_file}\n")
@@ -188,7 +271,7 @@ def run_inventory(host, user, password, folders_input, output_file, log_callback
             logf.write(f"Archivo CSV: {output_file}\n")
             logf.write(f"Carpetas procesadas: {len(visited_folders)}\n")
             logf.write(f"APIs únicas encontradas: {len(api_map)}\n")
-            logf.write("Carpetas vacías detectadas:\n")
+            logf.write("Carpetas vací­as detectadas:\n")
             for ef in empty_folders:
                 logf.write(f" - {ef}\n")
     except Exception:
@@ -214,21 +297,85 @@ def test_connection(host, user, password, timeout=8):
 # GUI
 # =========================
 
+def get_theme_colors(theme_name):
+    """Devuelve colores apropiados para el texto del banner según el tema"""
+    dark_themes = ["superhero", "darkly", "cyborg", "vapor", "solar"]
+    if theme_name in dark_themes:
+        return "#00d4aa"  # Color verde/cian para temas oscuros
+    else:
+        return "#2c3e50"  # Color azul oscuro para temas claros
+
 def build_gui():
+    current_theme = {"name": THEME if USE_TTB else "default"}
+    
     if USE_TTB:
-        root = tb.Window(themename=THEME)
+        root = tb.Window(themename=current_theme["name"])
+        style = tb.Style()
     else:
         root = tk.Tk()
 
     root.tk.call("tk", "scaling", 1.75)
-    root.title("RestPy GUI Rev4 - Inventario APIGW V9 by Marcos R.")
+    root.title("RestGUI v1.1.0 - API Gateway Inventory Tool by Marcos R.")
     root.geometry("1000x700")
     console_font = tkfont.Font(family="Consolas", size=10)
 
-    # --- Header ---
-    banner = "Inventario APIs - APIGW V9\n"
-    lbl_banner = ttk.Label(root, text=banner, anchor="center", font=("roboto", 14, "bold"))
-    lbl_banner.pack(fill="x", padx=8, pady=(8,0))
+    # ASCII Art para RestGui
+    ascii_art = """
+    ██████╗ ███████╗███████╗████████╗ ██████╗ ██╗   ██╗██╗
+    ██╔══██╗██╔════╝██╔════╝╚══██╔══╝██╔════╝ ██║   ██║██║
+    ██████╔╝█████╗  ███████╗   ██║   ██║  ███╗██║   ██║██║
+    ██╔══██╗██╔══╝  ╚════██║   ██║   ██║   ██║██║   ██║██║
+    ██║  ██║███████╗███████║   ██║   ╚██████╔╝╚██████╔╝██║
+    ╚═╝  ╚═╝╚══════╝╚══════╝   ╚═╝    ╚═════╝  ╚═════╝ ╚═╝
+    """
+    
+    # Frame superior para el menú de temas (solo si ttkbootstrap está disponible)
+    if USE_TTB:
+        frame_top = ttk.Frame(root)
+        frame_top.pack(fill="x", padx=8, pady=(8,0))
+        
+        # Spacer para empujar el combobox a la derecha
+        ttk.Label(frame_top, text="").pack(side="left", expand=True)
+        
+        ttk.Label(frame_top, text="Tema:", font=("Segoe UI", 9)).pack(side="right", padx=(0,5))
+        theme_combo = ttk.Combobox(frame_top, values=AVAILABLE_THEMES, width=12, state="readonly")
+        theme_combo.set(current_theme["name"])
+        theme_combo.pack(side="right", padx=(0,8))
+        
+        def change_theme(event=None):
+            new_theme = theme_combo.get()
+            if new_theme != current_theme["name"]:
+                current_theme["name"] = new_theme
+                try:
+                    # Aplicar el tema en caliente usando el objeto style
+                    style.theme_use(new_theme)
+                except Exception as e:
+                    messagebox.showerror("Error", f"No se pudo aplicar el tema: {e}")
+                    return
+                # Actualizar colores del banner/ASCII si ya existen
+                text_color_local = get_theme_colors(new_theme)
+                try:
+                    lbl_ascii.configure(foreground=text_color_local)
+                except Exception:
+                    pass
+                try:
+                    lbl_banner.configure(foreground=text_color_local)
+                except Exception:
+                    pass
+
+        theme_combo.bind("<<ComboboxSelected>>", change_theme)
+
+    # ASCII Art
+    ascii_font = tkfont.Font(family="Courier New", size=8, weight="bold")
+    text_color = get_theme_colors(current_theme["name"]) if USE_TTB else "#2c3e50"
+    lbl_ascii = ttk.Label(root, text=ascii_art, font=ascii_font, foreground=text_color, anchor="center")
+    lbl_ascii.pack(fill="x", padx=8, pady=(8,0))
+
+    # Banner con fuente moderna
+    banner = "Programa para Inventario de APIs"
+    modern_font = tkfont.Font(family="Segoe UI", size=12, weight="normal")
+    lbl_banner = ttk.Label(root, text=banner, anchor="center", font=modern_font, foreground=text_color)
+    lbl_banner.pack(fill="x", padx=8, pady=(0,8))
 
     # --- Frame configuración ---
     frame_cfg = ttk.Frame(root, padding=(8,8,8,8))
@@ -309,7 +456,7 @@ def build_gui():
             gui_log(f"[{timestamp()}] Conexión correcta.\n")
             messagebox.showinfo("Conexión", "Conexión exitosa.")
         else:
-            gui_log(f"[{timestamp()}] Falló conexión: {err}\n")
+            gui_log(f"[{timestamp()}] Fallo conexión: {err}\n")
             messagebox.showerror("Conexión", f"No se pudo conectar: {err}")
 
     def on_start():
