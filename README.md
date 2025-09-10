@@ -6,6 +6,9 @@
 [![GitHub stars](https://img.shields.io/github/stars/roky146/Api-Gateway-Inventory-Scripts)](https://github.com/roky146/Api-Gateway-Inventory-Scripts/stargazers)
 [![GitHub last commit](https://img.shields.io/github/last-commit/roky146/Api-Gateway-Inventory-Scripts)](https://github.com/roky146/Api-Gateway-Inventory-Scripts/commits/main)
 
+<img width="664" height="502" alt="image" src="https://github.com/user-attachments/assets/d9fa58a7-8c8a-431e-bdc3-5d794c1507d5" />
+
+
 ---
 
 ## Descripción
